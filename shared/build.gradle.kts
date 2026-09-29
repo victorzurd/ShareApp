@@ -1,13 +1,17 @@
 plugins {
-    alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.jetbrains.compose)
-    alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.androidMultiplatformLibrary)
+    alias(libs.plugins.composeMultiplatform)
+    alias(libs.plugins.composeCompiler)
 }
 
 kotlin {
-    androidTarget()
-    jvm("desktop")
+    android {
+        namespace = "com.example.sharedapp"
+        compileSdk = 37
+        minSdk = 24
+    }
+    jvm()
 
     sourceSets {
         commonMain.dependencies {
@@ -31,7 +35,7 @@ kotlin {
             implementation("androidx.core:core-ktx:1.13.1")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
         }
-        val desktopMain by getting {
+        val jvmMain by getting {
             dependencies {
                 implementation(compose.desktop.currentOs)
                 implementation("org.jmdns:jmdns:3.5.9")
@@ -40,25 +44,3 @@ kotlin {
     }
 }
 
-android {
-    namespace = "com.example.sharedapp"
-    compileSdk = 34
-
-    defaultConfig {
-        applicationId = "com.example.sharedapp"
-        minSdk = 24
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-compose.desktop {
-    application {
-        mainClass = "com.example.sharedapp.MainKt"
-    }
-}
