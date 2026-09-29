@@ -1,4 +1,4 @@
-rootProject.name = "ShareApp
+rootProject.name = "ShareApp"
 
 pluginManagement {
     repositories {
