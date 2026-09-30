@@ -32,6 +32,7 @@ class ShareAppServer(
     private val requestSenders = mutableMapOf<String, String>()
     private val requestFileNames = mutableMapOf<String, String>()
     private val fileSizes = mutableMapOf<String, Long>()
+    @Volatile private var requireApproval: Boolean = true
 
     val isRunning: Boolean
         get() = stopEngine != null
@@ -50,6 +51,10 @@ class ShareAppServer(
             decisions[id] = if (accepted) "ACCEPTED" else "REJECTED"
         }
         _incomingFileRequests.update { requests -> requests.filterNot { it.id == id } }
+    }
+
+    fun setRequireApproval(required: Boolean) {
+        requireApproval = required
     }
 
     fun start() {
@@ -71,12 +76,13 @@ class ShareAppServer(
                     if (id.isNullOrBlank() || sender.isNullOrBlank() || count == null || count !in 0..MAX_TEXT_CHARACTERS) {
                         call.respondText("Solicitud no válida", status = HttpStatusCode.BadRequest)
                     } else {
+                        val approved = !requireApproval
                         synchronized(decisions) {
-                            decisions[id] = "WAITING"
+                            decisions[id] = if (approved) "ACCEPTED" else "WAITING"
                             requestSenders[id] = sender
                         }
-                        _incomingRequests.update { current -> current.filterNot { it.id == id } + IncomingTextRequest(id, sender, count) }
-                        call.respondText("WAITING", status = HttpStatusCode.Accepted)
+                        if (!approved) _incomingRequests.update { current -> current.filterNot { it.id == id } + IncomingTextRequest(id, sender, count) }
+                        call.respondText(if (approved) "ACCEPTED" else "WAITING", status = HttpStatusCode.Accepted)
                     }
                 }
                 post("/transfer/text/decision") {
@@ -122,14 +128,15 @@ class ShareAppServer(
                     if (id.isNullOrBlank() || sender.isNullOrBlank() || name == null || size == null || size !in 0..MAX_SHARE_FILE_BYTES.toLong()) {
                         call.respondText("Solicitud no válida", status = HttpStatusCode.BadRequest)
                     } else {
+                        val approved = !requireApproval
                         synchronized(decisions) {
-                            decisions[id] = "WAITING"
+                            decisions[id] = if (approved) "ACCEPTED" else "WAITING"
                             requestSenders[id] = sender
                             requestFileNames[id] = name
                             fileSizes[id] = size
                         }
-                        _incomingFileRequests.update { current -> current.filterNot { it.id == id } + IncomingFileRequest(id, sender, name, size) }
-                        call.respondText("WAITING", status = HttpStatusCode.Accepted)
+                        if (!approved) _incomingFileRequests.update { current -> current.filterNot { it.id == id } + IncomingFileRequest(id, sender, name, size) }
+                        call.respondText(if (approved) "ACCEPTED" else "WAITING", status = HttpStatusCode.Accepted)
                     }
                 }
                 post("/transfer/file/decision") {

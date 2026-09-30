@@ -8,6 +8,7 @@ interface PeerDiscovery {
     val isSearching: StateFlow<Boolean>
 
     fun startAdvertising(port: Int)
+    fun updateDeviceName(name: String)
     fun startSearching()
     fun stopSearching()
     fun stop()

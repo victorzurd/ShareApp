@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -26,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -86,6 +89,21 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
     val launchFilePicker = ShareAppFilePicker { pickedFile = it }
     val readClipboardText = ShareAppClipboardReader()
     val writeClipboardText = ShareAppClipboardWriter()
+    val settingsController = rememberShareAppSettings()
+    val settings = settingsController.settings
+    val chooseSaveFolder = ShareAppDirectoryPicker { folder ->
+        if (folder != null) settingsController.update { it.copy(saveFolder = folder) }
+    }
+    val openSavedLocation = rememberOpenSavedLocation()
+    var showDeviceNameDialog by remember { mutableStateOf(false) }
+    var deviceNameDraft by remember { mutableStateOf(settings.deviceName) }
+    var showAutoAcceptWarning by remember { mutableStateOf(false) }
+    var selectedReceivedFile by remember { mutableStateOf<ReceivedFile?>(null) }
+    var selectedReceivedText by remember { mutableStateOf<ReceivedText?>(null) }
+    var savedFileLocations by remember { mutableStateOf<Map<String, SavedFileLocation>>(emptyMap()) }
+
+    LaunchedEffect(settings.deviceName) { peerDiscovery.updateDeviceName(settings.deviceName) }
+    LaunchedEffect(settings.requireApproval) { localServer.setRequireApproval(settings.requireApproval) }
 
     LaunchedEffect(receivedTexts.firstOrNull()?.id) {
         receivedTexts.firstOrNull()?.let { received ->
@@ -128,7 +146,8 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
         )
     ) {
         Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
-            Column(modifier = Modifier.fillMaxSize()) {
+          Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(modifier = Modifier.widthIn(max = 820.dp).fillMaxSize()) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -146,7 +165,7 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
                     }
                     Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(Green))
                     Spacer(Modifier.width(7.dp))
-                    Text("En línea", color = Green, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(if (localServer.isRunning) "En línea" else "Desconectado", color = if (localServer.isRunning) Green else Muted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
 
                 Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp)) {
@@ -174,8 +193,26 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
                                 if (isSearching) peerDiscovery.stopSearching() else peerDiscovery.startSearching()
                             }
                         )
-                        1 -> TransfersScreen(receivedTexts, receivedFiles)
-                        else -> SettingsScreen()
+                        1 -> TransfersScreen(
+                            receivedTexts = receivedTexts,
+                            receivedFiles = receivedFiles,
+                            onFileClick = { file ->
+                                val location = savedFileLocations[file.id]
+                                if (location == null) selectedReceivedFile = file
+                                else if (!openSavedLocation(location)) transferNotice = "No se pudo abrir el archivo. Comprueba que sigue disponible."
+                            },
+                            onTextClick = { selectedReceivedText = it },
+                        )
+                        else -> SettingsScreen(
+                            settings = settings,
+                            onDeviceNameClick = { deviceNameDraft = settings.deviceName; showDeviceNameDialog = true },
+                            onChooseFolder = chooseSaveFolder,
+                            onResetFolder = { settingsController.update { it.copy(saveFolder = null) } },
+                            onRequireApprovalChange = { required ->
+                                if (required) settingsController.update { it.copy(requireApproval = true) }
+                                else showAutoAcceptWarning = true
+                            },
+                        )
                     }
                 }
 
@@ -200,6 +237,7 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
                     }
                 }
             }
+          }
         }
 
         peerCheck?.let { result ->
@@ -309,14 +347,86 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
             AlertDialog(
                 onDismissRequest = { shownFileId = file.id },
                 title = { Text("Archivo recibido") },
-                text = { Text("${file.fileName} de ${file.senderName} se guardará en la carpeta Descargas/ShareApp.") },
+                text = { Text("${file.fileName} de ${file.senderName} se guardará en ${if (settings.saveFolder == null) "Descargas/ShareApp" else "la carpeta seleccionada"}.") },
                 confirmButton = { TextButton(onClick = { shownFileId = file.id; fileToSave = file; selectedTab = 1 }) { Text("Guardar archivo") } },
                 dismissButton = { TextButton(onClick = { shownFileId = file.id }) { Text("Después") } }
             )
         }
 
         fileToSave?.let { file ->
-            SaveReceivedFile(file, onSaved = { path -> transferNotice = "Archivo guardado en $path"; fileToSave = null }, onError = { message -> transferNotice = message; fileToSave = null })
+            SaveReceivedFile(file, settings.saveFolder, onSaved = { location ->
+                savedFileLocations = savedFileLocations + (file.id to location)
+                transferNotice = "Archivo guardado en ${location.displayPath}"
+                fileToSave = null
+            }, onError = { message -> transferNotice = message; fileToSave = null })
+        }
+
+        selectedReceivedFile?.let { file ->
+            val location = savedFileLocations[file.id]
+            AlertDialog(
+                onDismissRequest = { selectedReceivedFile = null },
+                title = { Text(file.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("Recibido de ${file.senderName}", color = Muted)
+                        Text(formatFileSize(file.bytes.size.toLong()), color = Muted)
+                        Text(location?.displayPath ?: "Aún no se ha guardado en el dispositivo.", color = Muted, fontSize = 12.sp)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (location == null) fileToSave = file
+                        else if (!openSavedLocation(location)) transferNotice = "No se pudo abrir el archivo. Comprueba que sigue disponible."
+                        else selectedReceivedFile = null
+                    }) { Text(if (location == null) "Guardar archivo" else "Abrir ubicación") }
+                },
+                dismissButton = { TextButton(onClick = { selectedReceivedFile = null }) { Text("Cerrar") } },
+            )
+        }
+
+        selectedReceivedText?.let { text ->
+            AlertDialog(
+                onDismissRequest = { selectedReceivedText = null },
+                title = { Text("Texto recibido") },
+                text = { Column { Text("De ${text.senderName}", color = Muted); Spacer(Modifier.height(8.dp)); Text(text.text) } },
+                confirmButton = { TextButton(onClick = { writeClipboardText(text.text); selectedReceivedText = null }) { Text("Copiar otra vez") } },
+                dismissButton = { TextButton(onClick = { selectedReceivedText = null }) { Text("Cerrar") } },
+            )
+        }
+
+        if (showDeviceNameDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeviceNameDialog = false },
+                title = { Text("Nombre del dispositivo") },
+                text = {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = deviceNameDraft,
+                        onValueChange = { deviceNameDraft = it.take(38) },
+                        singleLine = true,
+                        label = { Text("Nombre") },
+                        supportingText = { Text("${deviceNameDraft.length}/38") },
+                    )
+                },
+                confirmButton = { TextButton(onClick = {
+                    val cleaned = deviceNameDraft.trim()
+                    if (cleaned.isNotEmpty()) settingsController.update { it.copy(deviceName = cleaned) }
+                    showDeviceNameDialog = false
+                }) { Text("Guardar") } },
+                dismissButton = { TextButton(onClick = { showDeviceNameDialog = false }) { Text("Cancelar") } },
+            )
+        }
+
+        if (showAutoAcceptWarning) {
+            AlertDialog(
+                onDismissRequest = { showAutoAcceptWarning = false },
+                title = { Text("¿Desactivar la confirmación?") },
+                text = { Text("ShareApp aceptará automáticamente textos y archivos de dispositivos en tu red local. Actívalo solo en una red de confianza.") },
+                confirmButton = { TextButton(onClick = {
+                    settingsController.update { it.copy(requireApproval = false) }
+                    showAutoAcceptWarning = false
+                }) { Text("Aceptar automáticamente") } },
+                dismissButton = { TextButton(onClick = { showAutoAcceptWarning = false }) { Text("Mantener confirmación") } },
+            )
         }
 
         receivedTexts.firstOrNull()?.takeIf { it.id != shownTextId }?.let { received ->
@@ -346,7 +456,7 @@ private fun DevicesScreen(
         Spacer(Modifier.height(18.dp))
         Text("Comparte cerca.", color = Ink, fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.7).sp)
         Spacer(Modifier.height(5.dp))
-        Text("Envía archivos directamente entre tus dispositivos.", color = Muted, fontSize = 14.sp)
+        Text("Envía archivos y textos entre tus dispositivos.", color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(20.dp))
 
         Card(
@@ -362,7 +472,7 @@ private fun DevicesScreen(
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Red local", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Text("Conectado a Casa · privada", color = Muted, fontSize = 12.sp)
+                    Text("Dispositivos de tu red local", color = Muted, fontSize = 12.sp)
                 }
                 Text("●", color = Green, fontSize = 10.sp)
             }
@@ -422,7 +532,12 @@ private fun DeviceCard(device: PeerDevice, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TransfersScreen(receivedTexts: List<ReceivedText>, receivedFiles: List<ReceivedFile>) {
+private fun TransfersScreen(
+    receivedTexts: List<ReceivedText>,
+    receivedFiles: List<ReceivedFile>,
+    onFileClick: (ReceivedFile) -> Unit,
+    onTextClick: (ReceivedText) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Transferencias", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Bold)
@@ -430,11 +545,34 @@ private fun TransfersScreen(receivedTexts: List<ReceivedText>, receivedFiles: Li
         Text("Actividad reciente entre tus dispositivos.", color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(22.dp))
         if (receivedTexts.isEmpty() && receivedFiles.isEmpty()) {
-            Text("Aún no hay transferencias.", color = Muted, fontSize = 14.sp)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                elevation = CardDefaults.cardElevation(0.dp),
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 34.dp, horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(modifier = Modifier.size(48.dp).clip(CircleShape).background(PaleGreen), contentAlignment = Alignment.Center) {
+                        Text("⇄", color = Green, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Todo empieza aquí", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Cuando recibas algo, aparecerá en esta lista.", color = Muted, fontSize = 12.sp)
+                }
+            }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(receivedFiles, key = { it.id }) { received ->
-                    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onFileClick(received) },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                        elevation = CardDefaults.cardElevation(0.dp),
+                    ) {
                         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("↓", color = Green, fontSize = 20.sp)
                             Spacer(Modifier.width(12.dp))
@@ -442,15 +580,23 @@ private fun TransfersScreen(receivedTexts: List<ReceivedText>, receivedFiles: Li
                                 Text(received.fileName, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                                 Text("${received.senderName} · ${formatFileSize(received.bytes.size.toLong())}", color = Muted, fontSize = 12.sp)
                             }
+                            Text("›", color = Muted, fontSize = 24.sp)
                         }
                     }
                 }
                 items(receivedTexts, key = { it.id }) { received ->
-                    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { onTextClick(received) },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+                        elevation = CardDefaults.cardElevation(0.dp),
+                    ) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
                             Text("Texto de ${received.senderName}", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                             Spacer(Modifier.height(8.dp))
                             Text(received.text, color = Muted, fontSize = 13.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Ver contenido", color = Green, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -466,31 +612,101 @@ private fun formatFileSize(bytes: Long): String = when {
 }
 
 @Composable
-private fun SettingsScreen() {
+private fun SettingsScreen(
+    settings: ShareAppSettings,
+    onDeviceNameClick: () -> Unit,
+    onChooseFolder: () -> Unit,
+    onResetFolder: () -> Unit,
+    onRequireApprovalChange: (Boolean) -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Ajustes", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(5.dp))
-        Text("Personaliza cómo aparece tu dispositivo.", color = Muted, fontSize = 14.sp)
-        Spacer(Modifier.height(22.dp))
-        SettingRow("Nombre del dispositivo", "Pixel 8")
-        SettingRow("Guardar archivos en", "Descargas")
-        SettingRow("Aceptar transferencias", "Preguntar siempre")
+        Spacer(Modifier.height(4.dp))
+        Text("Tu espacio de intercambio.", color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(18.dp))
-        Text("ShareApp · Transferencia local y privada", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 4.dp))
+        SettingsSectionTitle("DISPOSITIVO")
+        SettingsCard {
+            SettingsActionRow(
+                icon = "S",
+                title = "Nombre visible",
+                value = settings.deviceName,
+                action = "Editar",
+                onClick = onDeviceNameClick,
+            )
+        }
+        Spacer(Modifier.height(15.dp))
+        SettingsSectionTitle("ARCHIVOS")
+        SettingsCard {
+            SettingsActionRow(
+                icon = "↓",
+                title = "Carpeta de destino",
+                value = settings.saveFolder?.let { if (it.startsWith("content://")) "Carpeta personalizada" else it } ?: "Descargas / ShareApp",
+                action = "Cambiar",
+                onClick = onChooseFolder,
+            )
+            if (settings.saveFolder != null) {
+                androidx.compose.material3.HorizontalDivider(color = Line, modifier = Modifier.padding(horizontal = 16.dp))
+                TextButton(onClick = onResetFolder, modifier = Modifier.align(Alignment.End)) { Text("Restaurar ubicación predeterminada") }
+            }
+        }
+        Spacer(Modifier.height(15.dp))
+        SettingsSectionTitle("PRIVACIDAD")
+        SettingsCard {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(PaleGreen), contentAlignment = Alignment.Center) {
+                    Text("✓", color = Green, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Preguntar antes de recibir", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Spacer(Modifier.height(3.dp))
+                    Text(if (settings.requireApproval) "Cada transferencia requiere tu aprobación." else "Se aceptan transferencias automáticamente en esta red.", color = Muted, fontSize = 12.sp)
+                }
+                Switch(checked = settings.requireApproval, onCheckedChange = onRequireApprovalChange)
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Text("ShareApp · Solo red local", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 4.dp))
     }
 }
 
 @Composable
-private fun SettingRow(title: String, value: String) {
-    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 9.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(4.dp))
-                Text(value, color = Muted, fontSize = 12.sp)
-            }
-            Text("›", color = Muted, fontSize = 23.sp)
+private fun SettingsSectionTitle(title: String) {
+    Text(title, color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp, modifier = Modifier.padding(start = 5.dp, bottom = 7.dp))
+}
+
+@Composable
+private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
+        elevation = CardDefaults.cardElevation(0.dp),
+    ) {
+        Column(content = content)
+    }
+}
+
+@Composable
+private fun SettingsActionRow(icon: String, title: String, value: String, action: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(PaleGreen), contentAlignment = Alignment.Center) {
+            Text(icon, color = Green, fontWeight = FontWeight.Bold)
         }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(3.dp))
+            Text(value, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(action, color = Green, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }

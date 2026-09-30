@@ -14,12 +14,15 @@ import java.util.UUID
 actual fun createPeerDiscovery(platformContext: Any?): PeerDiscovery = JvmPeerDiscovery()
 
 private class JvmPeerDiscovery : PeerDiscovery {
-    private val localName = "ShareApp Desktop ${UUID.randomUUID().toString().take(6)}"
+    private var deviceName = "Ordenador"
+    private val instanceId = UUID.randomUUID().toString().take(6)
+    private val localName: String get() = "ShareApp ${deviceName.take(38)} $instanceId"
     private val mutableDevices = MutableStateFlow<List<PeerDevice>>(emptyList())
     private val mutableSearching = MutableStateFlow(false)
     private var jmdns: JmDNS? = null
     private var registeredService: ServiceInfo? = null
     private var serviceListener: ServiceListener? = null
+    private var advertisedPort: Int? = null
 
     override val devices: StateFlow<List<PeerDevice>> = mutableDevices.asStateFlow()
     override val isSearching: StateFlow<Boolean> = mutableSearching.asStateFlow()
@@ -27,6 +30,7 @@ private class JvmPeerDiscovery : PeerDiscovery {
     @Synchronized
     override fun startAdvertising(port: Int) {
         if (registeredService != null) return
+        advertisedPort = port
         try {
             val dns = getOrCreateJmDns()
             val info = ServiceInfo.create(SERVICE_TYPE, localName, port, "ShareApp P2P")
@@ -34,6 +38,19 @@ private class JvmPeerDiscovery : PeerDiscovery {
             registeredService = info
         } catch (_: IOException) {
             // Se podrá volver a intentar cuando el usuario vuelva a iniciar ShareApp.
+        }
+    }
+
+    @Synchronized
+    override fun updateDeviceName(name: String) {
+        val cleaned = name.trim().ifBlank { return }.take(38)
+        if (deviceName == cleaned) return
+        deviceName = cleaned
+        val dns = jmdns
+        if (dns != null && registeredService != null) {
+            runCatching { dns.unregisterService(registeredService) }
+            registeredService = null
+            advertisedPort?.let(::startAdvertising)
         }
     }
 
@@ -96,6 +113,7 @@ private class JvmPeerDiscovery : PeerDiscovery {
             runCatching { dns.close() }
         }
         registeredService = null
+        advertisedPort = null
         jmdns = null
         mutableDevices.value = emptyList()
     }

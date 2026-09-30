@@ -17,18 +17,23 @@ actual fun createPeerDiscovery(platformContext: Any?): PeerDiscovery {
 
 private class AndroidPeerDiscovery(context: Context) : PeerDiscovery {
     private val manager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-    private val localName = "ShareApp Android ${UUID.randomUUID().toString().take(6)}"
+    private var deviceName = "Android"
+    private val instanceId = UUID.randomUUID().toString().take(6)
+    private val localName: String get() = "ShareApp ${deviceName.take(38)} $instanceId"
     private val mutableDevices = MutableStateFlow<List<PeerDevice>>(emptyList())
     private val mutableSearching = MutableStateFlow(false)
     private var registeredName: String? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var advertisedPort: Int? = null
+    private var restartAfterUnregister = false
 
     override val devices: StateFlow<List<PeerDevice>> = mutableDevices.asStateFlow()
     override val isSearching: StateFlow<Boolean> = mutableSearching.asStateFlow()
 
     override fun startAdvertising(port: Int) {
         if (registrationListener != null) return
+        advertisedPort = port
 
         val serviceInfo = NsdServiceInfo().apply {
             serviceName = localName
@@ -44,7 +49,14 @@ private class AndroidPeerDiscovery(context: Context) : PeerDiscovery {
                 registrationListener = null
             }
 
-            override fun onServiceUnregistered(info: NsdServiceInfo) = Unit
+            override fun onServiceUnregistered(info: NsdServiceInfo) {
+                if (restartAfterUnregister) {
+                    restartAfterUnregister = false
+                    registrationListener = null
+                    registeredName = null
+                    advertisedPort?.let(::startAdvertising)
+                }
+            }
             override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) = Unit
         }
         registrationListener = listener
@@ -52,6 +64,27 @@ private class AndroidPeerDiscovery(context: Context) : PeerDiscovery {
             manager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, listener)
         } catch (_: SecurityException) {
             registrationListener = null
+        }
+    }
+
+    override fun updateDeviceName(name: String) {
+        val cleaned = name.trim().ifBlank { return }.take(38)
+        if (deviceName == cleaned) return
+        deviceName = cleaned
+        val listener = registrationListener
+        if (listener == null) {
+            advertisedPort?.let(::startAdvertising)
+            return
+        }
+        restartAfterUnregister = true
+        try {
+            manager.unregisterService(listener)
+        } catch (_: IllegalArgumentException) {
+            restartAfterUnregister = false
+            registrationListener = null
+            advertisedPort?.let(::startAdvertising)
+        } catch (_: SecurityException) {
+            restartAfterUnregister = false
         }
     }
 
@@ -140,6 +173,8 @@ private class AndroidPeerDiscovery(context: Context) : PeerDiscovery {
         }
         registrationListener = null
         registeredName = null
+        advertisedPort = null
+        restartAfterUnregister = false
         mutableDevices.value = emptyList()
     }
 

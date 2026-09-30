@@ -29,6 +29,14 @@ data class IncomingFileRequest(val id: String, val senderName: String, val fileN
 
 data class ReceivedFile(val id: String, val senderName: String, val fileName: String, val bytes: ByteArray)
 
+data class SavedFileLocation(val token: String, val displayPath: String)
+
+data class ShareAppSettings(
+    val deviceName: String,
+    val saveFolder: String? = null,
+    val requireApproval: Boolean = true,
+)
+
 const val MAX_SHARE_FILE_BYTES = 25 * 1024 * 1024
 
 /** Una transferencia de texto o archivo entre este dispositivo y otro. */
