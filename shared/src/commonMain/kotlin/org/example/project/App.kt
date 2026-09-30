@@ -62,11 +62,18 @@ private data class PeerCheckState(
 )
 
 @Composable
-fun App(peerDiscovery: PeerDiscovery) {
+fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val devices by peerDiscovery.devices.collectAsState()
     val isSearching by peerDiscovery.isSearching.collectAsState()
+    val incomingRequests by localServer.incomingRequests.collectAsState()
+    val receivedTexts by localServer.receivedTexts.collectAsState()
     var peerCheck by remember { mutableStateOf<PeerCheckState?>(null) }
+    var textPeer by remember { mutableStateOf<PeerDevice?>(null) }
+    var textDraft by remember { mutableStateOf("") }
+    var isSendingText by remember { mutableStateOf(false) }
+    var transferNotice by remember { mutableStateOf<String?>(null) }
+    var shownTextId by remember { mutableStateOf<String?>(null) }
     var checkJob by remember { mutableStateOf<Job?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val peerApi = remember { PeerApiClient() }
@@ -133,7 +140,7 @@ fun App(peerDiscovery: PeerDiscovery) {
                                 if (isSearching) peerDiscovery.stopSearching() else peerDiscovery.startSearching()
                             }
                         )
-                        1 -> TransfersScreen()
+                        1 -> TransfersScreen(receivedTexts)
                         else -> SettingsScreen()
                     }
                 }
@@ -178,14 +185,78 @@ fun App(peerDiscovery: PeerDiscovery) {
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        checkJob?.cancel()
-                        peerCheck = null
-                    }) {
-                        Text(if (result.isChecking) "Cancelar" else "Cerrar")
+                    Row {
+                        if (!result.isChecking && result.message != null) {
+                            TextButton(onClick = { textPeer = result.peer; textDraft = ""; peerCheck = null }) { Text("Enviar texto") }
+                        }
+                        TextButton(onClick = { checkJob?.cancel(); peerCheck = null }) {
+                            Text(if (result.isChecking) "Cancelar" else "Cerrar")
+                        }
                     }
                 }
             )
+        }
+
+        textPeer?.let { peer ->
+            AlertDialog(
+                onDismissRequest = { if (!isSendingText) textPeer = null },
+                title = { Text("Enviar texto a ${peer.name}") },
+                text = {
+                    Column {
+                        Text("Primero se pedirá permiso. El texto se enviará solo si el otro dispositivo acepta.")
+                        Spacer(Modifier.height(12.dp))
+                        androidx.compose.material3.OutlinedTextField(
+                            value = textDraft,
+                            onValueChange = { if (it.length <= ShareAppServer.MAX_TEXT_CHARACTERS) textDraft = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 4,
+                            maxLines = 8,
+                            placeholder = { Text("Escribe o pega un texto…") },
+                            supportingText = { Text("${textDraft.length}/${ShareAppServer.MAX_TEXT_CHARACTERS}") }
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(enabled = textDraft.isNotBlank() && !isSendingText, onClick = {
+                        isSendingText = true
+                        coroutineScope.launch {
+                            try {
+                                transferNotice = peerApi.sendText(peer, "Este dispositivo", textDraft)
+                            } catch (error: Exception) {
+                                transferNotice = error.message ?: "No se pudo enviar el texto."
+                            } finally {
+                                isSendingText = false
+                                textPeer = null
+                            }
+                        }
+                    }) { Text(if (isSendingText) "Esperando aceptación…" else "Solicitar envío") }
+                },
+                dismissButton = { TextButton(enabled = !isSendingText, onClick = { textPeer = null }) { Text("Cancelar") } }
+            )
+        }
+
+        incomingRequests.firstOrNull()?.let { request ->
+            AlertDialog(
+                onDismissRequest = { localServer.decideTextRequest(request.id, false) },
+                title = { Text("Solicitud de texto") },
+                text = { Text("${request.senderName} quiere enviarte un texto de ${request.characterCount} caracteres. ¿Aceptas recibirlo?") },
+                confirmButton = { TextButton(onClick = { localServer.decideTextRequest(request.id, true) }) { Text("Aceptar") } },
+                dismissButton = { TextButton(onClick = { localServer.decideTextRequest(request.id, false) }) { Text("Rechazar") } }
+            )
+        }
+
+        receivedTexts.firstOrNull()?.takeIf { it.id != shownTextId }?.let { received ->
+            AlertDialog(
+                onDismissRequest = { shownTextId = received.id },
+                title = { Text("Texto recibido de ${received.senderName}") },
+                text = { Text(received.text) },
+                confirmButton = { TextButton(onClick = { shownTextId = received.id; selectedTab = 1 }) { Text("Ver transferencias") } },
+                dismissButton = { TextButton(onClick = { shownTextId = received.id }) { Text("Cerrar") } }
+            )
+        }
+
+        transferNotice?.let { notice ->
+            AlertDialog(onDismissRequest = { transferNotice = null }, title = { Text("ShareApp") }, text = { Text(notice) }, confirmButton = { TextButton(onClick = { transferNotice = null }) { Text("Aceptar") } })
         }
     }
 }
@@ -277,19 +348,27 @@ private fun DeviceCard(device: PeerDevice, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TransfersScreen() {
-    val transfers = listOf(
-        DemoTransfer("Fotos vacaciones.zip", "A MacBook de Alex · 68 %", 0.68f, true),
-        DemoTransfer("documento.pdf", "Recibido · completado", 1f, false)
-    )
+private fun TransfersScreen(receivedTexts: List<ReceivedText>) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Transferencias", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(5.dp))
         Text("Actividad reciente entre tus dispositivos.", color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(22.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(transfers) { transfer -> TransferCard(transfer) }
+        if (receivedTexts.isEmpty()) {
+            Text("Aún no has recibido textos.", color = Muted, fontSize = 14.sp)
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(receivedTexts, key = { it.id }) { received ->
+                    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                            Text("Texto de ${received.senderName}", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Spacer(Modifier.height(8.dp))
+                            Text(received.text, color = Muted, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -10,6 +10,19 @@ data class PeerDevice(
     val port: Int,
 )
 
+/** Solicitud pendiente: el contenido no se envía hasta que el receptor acepte. */
+data class IncomingTextRequest(
+    val id: String,
+    val senderName: String,
+    val characterCount: Int,
+)
+
+data class ReceivedText(
+    val id: String,
+    val senderName: String,
+    val text: String,
+)
+
 /** Una transferencia de texto o archivo entre este dispositivo y otro. */
 data class Transfer(
     val id: String,

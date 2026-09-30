@@ -17,7 +17,7 @@ fun main() {
             },
             title = "ShareApp",
         ) {
-            App(peerDiscovery)
+            App(peerDiscovery, localServer)
         }
     }
 }

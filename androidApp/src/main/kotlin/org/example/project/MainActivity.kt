@@ -9,7 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 
 class MainActivity : ComponentActivity() {
-    private var localServer: ShareAppServer? = null
+    private val localServer = ShareAppServer()
     private lateinit var peerDiscovery: PeerDiscovery
 
     private val requestLocalNetworkPermission = registerForActivityResult(
@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
         peerDiscovery = createPeerDiscovery(applicationContext)
 
         setContent {
-            App(peerDiscovery)
+            App(peerDiscovery, localServer)
         }
     }
 
@@ -42,15 +42,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        localServer?.stop()
-        localServer = null
+        localServer.stop()
         peerDiscovery.stop()
         super.onStop()
     }
 
     private fun startLocalServer() {
-        if (localServer != null) return
-        localServer = ShareAppServer().also { it.start() }
+        if (localServer.isRunning) return
+        localServer.start()
         peerDiscovery.startAdvertising(ShareAppServer.DEFAULT_PORT)
     }
 }
