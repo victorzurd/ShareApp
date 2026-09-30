@@ -11,8 +11,6 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.URLBuilder
-import io.ktor.http.takeFrom
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -22,7 +20,7 @@ class PeerApiClient {
         install(HttpTimeout) {
             requestTimeoutMillis = REQUEST_TIMEOUT_MILLIS
             connectTimeoutMillis = REQUEST_TIMEOUT_MILLIS
-            socketTimeoutMillis = REQUEST_TIMEOUT_MILLIS
+            socketTimeoutMillis = FILE_TRANSFER_TIMEOUT_MILLIS
         }
     }
 
@@ -49,13 +47,51 @@ class PeerApiClient {
 
     suspend fun sendText(peer: PeerDevice, senderName: String, text: String): String {
         require(text.length <= MAX_TEXT_CHARACTERS) { "El texto supera el límite de $MAX_TEXT_CHARACTERS caracteres." }
-        val requestId = "${Random.nextLong().toULong().toString(16)}${Random.nextLong().toULong().toString(16)}"
+        val requestId = newRequestId()
         val baseUrl = peerBaseUrl(peer)
         val requestResponse = client.post("$baseUrl/transfer/text/request") {
             url { parameters.append("id", requestId); parameters.append("sender", senderName); parameters.append("characters", text.length.toString()) }
         }
         if (requestResponse.status != HttpStatusCode.Accepted) error("No se pudo solicitar permiso al dispositivo.")
 
+        waitForAcceptance(baseUrl, requestId)
+        val response = client.post("$baseUrl/transfer/text/content") {
+            url { parameters.append("id", requestId) }
+            contentType(ContentType.Text.Plain)
+            setBody(text)
+        }
+        if (response.status != HttpStatusCode.Created) error("No se pudo entregar el texto.")
+        return "Texto enviado correctamente."
+    }
+
+    suspend fun sendFile(peer: PeerDevice, senderName: String, file: PickedFile): String {
+        require(file.bytes.size <= MAX_SHARE_FILE_BYTES) { "El archivo supera el límite de 25 MB." }
+        val requestId = newRequestId()
+        val baseUrl = peerBaseUrl(peer)
+        val requestResponse = client.post("$baseUrl/transfer/file/request") {
+            url {
+                parameters.append("id", requestId)
+                parameters.append("sender", senderName)
+                parameters.append("name", file.name)
+                parameters.append("size", file.bytes.size.toString())
+            }
+        }
+        if (requestResponse.status != HttpStatusCode.Accepted) error("No se pudo solicitar permiso al dispositivo.")
+        waitForAcceptance(baseUrl, requestId)
+        val response = client.post("$baseUrl/transfer/file/content") {
+            url { parameters.append("id", requestId) }
+            contentType(ContentType.Application.OctetStream)
+            setBody(file.bytes)
+            timeout { requestTimeoutMillis = FILE_TRANSFER_TIMEOUT_MILLIS }
+        }
+        if (response.status != HttpStatusCode.Created) {
+            val detail = response.bodyAsText().trim().take(300)
+            error("El receptor respondió HTTP ${response.status.value}${if (detail.isNotEmpty()) ": $detail" else "."}")
+        }
+        return "${file.name} enviado correctamente."
+    }
+
+    private suspend fun waitForAcceptance(baseUrl: String, requestId: String) {
         repeat(120) {
             delay(500)
             val statusResponse = client.get("$baseUrl/transfer/text/status") {
@@ -64,13 +100,7 @@ class PeerApiClient {
             val state = statusResponse.bodyAsText().trim()
             when (state) {
                 "ACCEPTED" -> {
-                    val response = client.post("$baseUrl/transfer/text/content") {
-                        url { parameters.append("id", requestId) }
-                        contentType(ContentType.Text.Plain)
-                        setBody(text)
-                    }
-                    if (response.status != HttpStatusCode.Created) error("No se pudo entregar el texto.")
-                    return "Texto enviado correctamente."
+                    return
                 }
                 "REJECTED" -> error("El receptor rechazó la solicitud.")
                 "NOT_FOUND" -> error("La solicitud ya no está disponible.")
@@ -78,6 +108,8 @@ class PeerApiClient {
         }
         error("No hubo respuesta en 60 segundos. Vuelve a intentarlo.")
     }
+
+    private fun newRequestId() = "${Random.nextLong().toULong().toString(16)}${Random.nextLong().toULong().toString(16)}"
 
     private fun peerBaseUrl(peer: PeerDevice): String {
         val host = if (peer.host.contains(':') && !peer.host.startsWith('[')) "[${peer.host}]" else peer.host
@@ -90,5 +122,6 @@ class PeerApiClient {
         const val REQUEST_TIMEOUT_MILLIS = 5_000L
         const val HEALTH_RESPONSE = "ShareApp disponible"
         const val MAX_TEXT_CHARACTERS = 100_000
+        const val FILE_TRANSFER_TIMEOUT_MILLIS = 120_000L
     }
 }

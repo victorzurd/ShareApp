@@ -23,6 +23,14 @@ data class ReceivedText(
     val text: String,
 )
 
+data class PickedFile(val name: String, val bytes: ByteArray)
+
+data class IncomingFileRequest(val id: String, val senderName: String, val fileName: String, val sizeBytes: Long)
+
+data class ReceivedFile(val id: String, val senderName: String, val fileName: String, val bytes: ByteArray)
+
+const val MAX_SHARE_FILE_BYTES = 25 * 1024 * 1024
+
 /** Una transferencia de texto o archivo entre este dispositivo y otro. */
 data class Transfer(
     val id: String,

@@ -29,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -53,7 +54,6 @@ private val Green = androidx.compose.ui.graphics.Color(0xFF187B63)
 private val PaleGreen = androidx.compose.ui.graphics.Color(0xFFE6F3EE)
 private val Line = androidx.compose.ui.graphics.Color(0xFFE8ECE9)
 
-private data class DemoTransfer(val name: String, val detail: String, val progress: Float, val sending: Boolean)
 private data class PeerCheckState(
     val peer: PeerDevice,
     val isChecking: Boolean,
@@ -68,15 +68,49 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
     val isSearching by peerDiscovery.isSearching.collectAsState()
     val incomingRequests by localServer.incomingRequests.collectAsState()
     val receivedTexts by localServer.receivedTexts.collectAsState()
+    val incomingFileRequests by localServer.incomingFileRequests.collectAsState()
+    val receivedFiles by localServer.receivedFiles.collectAsState()
     var peerCheck by remember { mutableStateOf<PeerCheckState?>(null) }
     var textPeer by remember { mutableStateOf<PeerDevice?>(null) }
     var textDraft by remember { mutableStateOf("") }
     var isSendingText by remember { mutableStateOf(false) }
     var transferNotice by remember { mutableStateOf<String?>(null) }
     var shownTextId by remember { mutableStateOf<String?>(null) }
+    var fileSendPeer by remember { mutableStateOf<PeerDevice?>(null) }
+    var pickedFile by remember { mutableStateOf<PickedFile?>(null) }
+    var fileToSave by remember { mutableStateOf<ReceivedFile?>(null) }
+    var shownFileId by remember { mutableStateOf<String?>(null) }
     var checkJob by remember { mutableStateOf<Job?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val peerApi = remember { PeerApiClient() }
+    val launchFilePicker = ShareAppFilePicker { pickedFile = it }
+    val readClipboardText = ShareAppClipboardReader()
+    val writeClipboardText = ShareAppClipboardWriter()
+
+    LaunchedEffect(receivedTexts.firstOrNull()?.id) {
+        receivedTexts.firstOrNull()?.let { received ->
+            if (!writeClipboardText(received.text)) {
+                transferNotice = "El texto llegó, pero no se pudo copiar al portapapeles."
+            }
+        }
+    }
+
+    LaunchedEffect(pickedFile, fileSendPeer) {
+        val file = pickedFile
+        val peer = fileSendPeer
+        if (file != null && peer != null) {
+            try {
+                transferNotice = peerApi.sendFile(peer, "Este dispositivo", file)
+            } catch (error: Exception) {
+                transferNotice = error.message ?: "No se pudo enviar el archivo."
+            } finally {
+                pickedFile = null
+                fileSendPeer = null
+            }
+        } else if (file == null && peer != null) {
+            // El selector puede cancelarse; no se inicia ninguna transferencia.
+        }
+    }
 
     DisposableEffect(peerApi) {
         onDispose { peerApi.close() }
@@ -140,7 +174,7 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
                                 if (isSearching) peerDiscovery.stopSearching() else peerDiscovery.startSearching()
                             }
                         )
-                        1 -> TransfersScreen(receivedTexts)
+                        1 -> TransfersScreen(receivedTexts, receivedFiles)
                         else -> SettingsScreen()
                     }
                 }
@@ -185,9 +219,25 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
                     )
                 },
                 confirmButton = {
-                    Row {
+                    Column(horizontalAlignment = Alignment.End) {
                         if (!result.isChecking && result.message != null) {
                             TextButton(onClick = { textPeer = result.peer; textDraft = ""; peerCheck = null }) { Text("Enviar texto") }
+                            TextButton(onClick = {
+                                val clipboardText = readClipboardText()
+                                peerCheck = null
+                                if (clipboardText.isNullOrEmpty()) {
+                                    transferNotice = "El portapapeles no contiene texto. Copia un texto e inténtalo de nuevo."
+                                } else {
+                                    coroutineScope.launch {
+                                        try {
+                                            transferNotice = peerApi.sendText(result.peer, "Portapapeles · este dispositivo", clipboardText)
+                                        } catch (error: Exception) {
+                                            transferNotice = error.message ?: "No se pudo enviar el portapapeles."
+                                        }
+                                    }
+                                }
+                            }) { Text("Enviar portapapeles") }
+                            TextButton(onClick = { fileSendPeer = result.peer; peerCheck = null; launchFilePicker() }) { Text("Enviar archivo") }
                         }
                         TextButton(onClick = { checkJob?.cancel(); peerCheck = null }) {
                             Text(if (result.isChecking) "Cancelar" else "Cerrar")
@@ -245,11 +295,35 @@ fun App(peerDiscovery: PeerDiscovery, localServer: ShareAppServer) {
             )
         }
 
+        incomingFileRequests.firstOrNull()?.let { request ->
+            AlertDialog(
+                onDismissRequest = { localServer.decideFileRequest(request.id, false) },
+                title = { Text("Solicitud de archivo") },
+                text = { Text("${request.senderName} quiere enviarte ${request.fileName} (${formatFileSize(request.sizeBytes)}). ¿Aceptas recibirlo?") },
+                confirmButton = { TextButton(onClick = { localServer.decideFileRequest(request.id, true) }) { Text("Aceptar") } },
+                dismissButton = { TextButton(onClick = { localServer.decideFileRequest(request.id, false) }) { Text("Rechazar") } }
+            )
+        }
+
+        receivedFiles.firstOrNull()?.takeIf { it.id != shownFileId }?.let { file ->
+            AlertDialog(
+                onDismissRequest = { shownFileId = file.id },
+                title = { Text("Archivo recibido") },
+                text = { Text("${file.fileName} de ${file.senderName} se guardará en la carpeta Descargas/ShareApp.") },
+                confirmButton = { TextButton(onClick = { shownFileId = file.id; fileToSave = file; selectedTab = 1 }) { Text("Guardar archivo") } },
+                dismissButton = { TextButton(onClick = { shownFileId = file.id }) { Text("Después") } }
+            )
+        }
+
+        fileToSave?.let { file ->
+            SaveReceivedFile(file, onSaved = { path -> transferNotice = "Archivo guardado en $path"; fileToSave = null }, onError = { message -> transferNotice = message; fileToSave = null })
+        }
+
         receivedTexts.firstOrNull()?.takeIf { it.id != shownTextId }?.let { received ->
             AlertDialog(
                 onDismissRequest = { shownTextId = received.id },
                 title = { Text("Texto recibido de ${received.senderName}") },
-                text = { Text(received.text) },
+                text = { Column { Text("Se ha copiado automáticamente al portapapeles."); Spacer(Modifier.height(8.dp)); Text(received.text) } },
                 confirmButton = { TextButton(onClick = { shownTextId = received.id; selectedTab = 1 }) { Text("Ver transferencias") } },
                 dismissButton = { TextButton(onClick = { shownTextId = received.id }) { Text("Cerrar") } }
             )
@@ -348,17 +422,29 @@ private fun DeviceCard(device: PeerDevice, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TransfersScreen(receivedTexts: List<ReceivedText>) {
+private fun TransfersScreen(receivedTexts: List<ReceivedText>, receivedFiles: List<ReceivedFile>) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Transferencias", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(5.dp))
         Text("Actividad reciente entre tus dispositivos.", color = Muted, fontSize = 14.sp)
         Spacer(Modifier.height(22.dp))
-        if (receivedTexts.isEmpty()) {
-            Text("Aún no has recibido textos.", color = Muted, fontSize = 14.sp)
+        if (receivedTexts.isEmpty() && receivedFiles.isEmpty()) {
+            Text("Aún no hay transferencias.", color = Muted, fontSize = 14.sp)
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(receivedFiles, key = { it.id }) { received ->
+                    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("↓", color = Green, fontSize = 20.sp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(received.fileName, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                Text("${received.senderName} · ${formatFileSize(received.bytes.size.toLong())}", color = Muted, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
                 items(receivedTexts, key = { it.id }) { received ->
                     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
                         Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -373,29 +459,10 @@ private fun TransfersScreen(receivedTexts: List<ReceivedText>) {
     }
 }
 
-@Composable
-private fun TransferCard(transfer: DemoTransfer) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White), elevation = CardDefaults.cardElevation(0.dp)) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(modifier = Modifier.size(40.dp).clip(RoundedCornerShape(13.dp)).background(PaleGreen), contentAlignment = Alignment.Center) {
-                    Text(if (transfer.sending) "↑" else "↓", color = Green, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(transfer.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Text(transfer.detail, color = Muted, fontSize = 12.sp)
-                }
-                if (!transfer.sending) Text("✓", color = Green, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            }
-            if (transfer.sending) {
-                Spacer(Modifier.height(14.dp))
-                Box(modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape).background(Line)) {
-                    Box(modifier = Modifier.fillMaxWidth(transfer.progress).height(5.dp).clip(CircleShape).background(Green))
-                }
-            }
-        }
-    }
+private fun formatFileSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "${bytes / (1024 * 1024)} MB"
 }
 
 @Composable
