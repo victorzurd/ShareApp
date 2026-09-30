@@ -7,11 +7,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.tooling.preview.Preview
 
 class MainActivity : ComponentActivity() {
     private var localServer: ShareAppServer? = null
+    private lateinit var peerDiscovery: PeerDiscovery
 
     private val requestLocalNetworkPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -22,9 +21,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        peerDiscovery = createPeerDiscovery(applicationContext)
 
         setContent {
-            App()
+            App(peerDiscovery)
         }
     }
 
@@ -44,17 +44,14 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         localServer?.stop()
         localServer = null
+        peerDiscovery.stop()
         super.onStop()
     }
 
     private fun startLocalServer() {
         if (localServer != null) return
         localServer = ShareAppServer().also { it.start() }
+        peerDiscovery.startAdvertising(ShareAppServer.DEFAULT_PORT)
     }
 }
 
-@Preview
-@Composable
-fun AppAndroidPreview() {
-    App()
-}

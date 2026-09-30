@@ -26,6 +26,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -46,13 +47,13 @@ private val Green = androidx.compose.ui.graphics.Color(0xFF187B63)
 private val PaleGreen = androidx.compose.ui.graphics.Color(0xFFE6F3EE)
 private val Line = androidx.compose.ui.graphics.Color(0xFFE8ECE9)
 
-private data class DemoDevice(val name: String, val detail: String, val initials: String, val tint: androidx.compose.ui.graphics.Color)
 private data class DemoTransfer(val name: String, val detail: String, val progress: Float, val sending: Boolean)
 
 @Composable
-fun App() {
+fun App(peerDiscovery: PeerDiscovery) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    var isSearching by remember { mutableStateOf(false) }
+    val devices by peerDiscovery.devices.collectAsState()
+    val isSearching by peerDiscovery.isSearching.collectAsState()
 
     MaterialTheme(
         colorScheme = lightColorScheme(
@@ -89,7 +90,13 @@ fun App() {
 
                 Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp)) {
                     when (selectedTab) {
-                        0 -> DevicesScreen(isSearching, onSearch = { isSearching = !isSearching })
+                        0 -> DevicesScreen(
+                            devices = devices,
+                            isSearching = isSearching,
+                            onSearch = {
+                                if (isSearching) peerDiscovery.stopSearching() else peerDiscovery.startSearching()
+                            }
+                        )
                         1 -> TransfersScreen()
                         else -> SettingsScreen()
                     }
@@ -121,12 +128,7 @@ fun App() {
 }
 
 @Composable
-private fun DevicesScreen(isSearching: Boolean, onSearch: () -> Unit) {
-    val devices = listOf(
-        DemoDevice("MacBook de Alex", "Ordenador · disponible", "M", androidx.compose.ui.graphics.Color(0xFFEAF0FF)),
-        DemoDevice("PC del salón", "Windows · disponible", "P", androidx.compose.ui.graphics.Color(0xFFFFF0E4)),
-        DemoDevice("Pixel 8", "Android · este dispositivo", "P", PaleGreen)
-    )
+private fun DevicesScreen(devices: List<PeerDevice>, isSearching: Boolean, onSearch: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Comparte cerca.", color = Ink, fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.7).sp)
@@ -157,8 +159,20 @@ private fun DevicesScreen(isSearching: Boolean, onSearch: () -> Unit) {
             Text("Dispositivos", color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             Text("${devices.size} cerca", color = Muted, fontSize = 12.sp)
         }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.weight(1f)) {
-            items(devices) { device -> DeviceCard(device) }
+        if (devices.isEmpty()) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(if (isSearching) "Buscando ShareApp…" else "Aún no hay dispositivos", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(5.dp))
+                Text("Abre ShareApp en otro equipo conectado a esta Wi‑Fi.", color = Muted, fontSize = 12.sp)
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.weight(1f)) {
+                items(devices, key = { it.id }) { device -> DeviceCard(device) }
+            }
         }
         Button(
             onClick = onSearch,
@@ -172,7 +186,7 @@ private fun DevicesScreen(isSearching: Boolean, onSearch: () -> Unit) {
 }
 
 @Composable
-private fun DeviceCard(device: DemoDevice) {
+private fun DeviceCard(device: PeerDevice) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable { },
         shape = RoundedCornerShape(18.dp),
@@ -180,14 +194,14 @@ private fun DeviceCard(device: DemoDevice) {
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 15.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(modifier = Modifier.size(43.dp).clip(RoundedCornerShape(14.dp)).background(device.tint), contentAlignment = Alignment.Center) {
-                Text(device.initials, color = Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Box(modifier = Modifier.size(43.dp).clip(RoundedCornerShape(14.dp)).background(PaleGreen), contentAlignment = Alignment.Center) {
+                Text(device.name.take(1).uppercase(), color = Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(device.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(3.dp))
-                Text(device.detail, color = Muted, fontSize = 12.sp)
+                Text("Disponible · ${device.host}:${device.port}", color = Muted, fontSize = 12.sp)
             }
             Text("›", color = Muted, fontSize = 25.sp)
         }
