@@ -21,16 +21,20 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +43,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 private val Ink = androidx.compose.ui.graphics.Color(0xFF17211F)
 private val Muted = androidx.compose.ui.graphics.Color(0xFF78827E)
@@ -48,12 +54,26 @@ private val PaleGreen = androidx.compose.ui.graphics.Color(0xFFE6F3EE)
 private val Line = androidx.compose.ui.graphics.Color(0xFFE8ECE9)
 
 private data class DemoTransfer(val name: String, val detail: String, val progress: Float, val sending: Boolean)
+private data class PeerCheckState(
+    val peer: PeerDevice,
+    val isChecking: Boolean,
+    val message: String? = null,
+    val error: String? = null,
+)
 
 @Composable
 fun App(peerDiscovery: PeerDiscovery) {
     var selectedTab by remember { mutableIntStateOf(0) }
     val devices by peerDiscovery.devices.collectAsState()
     val isSearching by peerDiscovery.isSearching.collectAsState()
+    var peerCheck by remember { mutableStateOf<PeerCheckState?>(null) }
+    var checkJob by remember { mutableStateOf<Job?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val peerApi = remember { PeerApiClient() }
+
+    DisposableEffect(peerApi) {
+        onDispose { peerApi.close() }
+    }
 
     MaterialTheme(
         colorScheme = lightColorScheme(
@@ -93,6 +113,22 @@ fun App(peerDiscovery: PeerDiscovery) {
                         0 -> DevicesScreen(
                             devices = devices,
                             isSearching = isSearching,
+                            onDeviceClick = { peer ->
+                                checkJob?.cancel()
+                                peerCheck = PeerCheckState(peer = peer, isChecking = true)
+                                checkJob = coroutineScope.launch {
+                                    try {
+                                        val message = peerApi.checkHealth(peer)
+                                        peerCheck = PeerCheckState(peer, isChecking = false, message = message)
+                                    } catch (_: Exception) {
+                                        peerCheck = PeerCheckState(
+                                            peer = peer,
+                                            isChecking = false,
+                                            error = "No se pudo conectar. Comprueba que ShareApp sigue abierto y está en la misma Wi‑Fi."
+                                        )
+                                    }
+                                }
+                            },
                             onSearch = {
                                 if (isSearching) peerDiscovery.stopSearching() else peerDiscovery.startSearching()
                             }
@@ -124,11 +160,43 @@ fun App(peerDiscovery: PeerDiscovery) {
                 }
             }
         }
+
+        peerCheck?.let { result ->
+            AlertDialog(
+                onDismissRequest = {
+                    checkJob?.cancel()
+                    peerCheck = null
+                },
+                title = { Text(if (result.isChecking) "Conectando…" else result.peer.name) },
+                text = {
+                    Text(
+                        when {
+                            result.isChecking -> "Comprobando la conexión con ${result.peer.name}."
+                            result.message != null -> "Conexión correcta. ${result.message}"
+                            else -> result.error.orEmpty()
+                        }
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        checkJob?.cancel()
+                        peerCheck = null
+                    }) {
+                        Text(if (result.isChecking) "Cancelar" else "Cerrar")
+                    }
+                }
+            )
+        }
     }
 }
 
 @Composable
-private fun DevicesScreen(devices: List<PeerDevice>, isSearching: Boolean, onSearch: () -> Unit) {
+private fun DevicesScreen(
+    devices: List<PeerDevice>,
+    isSearching: Boolean,
+    onDeviceClick: (PeerDevice) -> Unit,
+    onSearch: () -> Unit,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Spacer(Modifier.height(18.dp))
         Text("Comparte cerca.", color = Ink, fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.7).sp)
@@ -171,7 +239,7 @@ private fun DevicesScreen(devices: List<PeerDevice>, isSearching: Boolean, onSea
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.weight(1f)) {
-                items(devices, key = { it.id }) { device -> DeviceCard(device) }
+                items(devices, key = { it.id }) { device -> DeviceCard(device) { onDeviceClick(device) } }
             }
         }
         Button(
@@ -186,9 +254,9 @@ private fun DevicesScreen(devices: List<PeerDevice>, isSearching: Boolean, onSea
 }
 
 @Composable
-private fun DeviceCard(device: PeerDevice) {
+private fun DeviceCard(device: PeerDevice, onClick: () -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable { },
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = androidx.compose.ui.graphics.Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
