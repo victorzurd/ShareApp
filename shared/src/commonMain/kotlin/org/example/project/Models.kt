@@ -1,6 +1,6 @@
 package org.example.project
 
-
+/** Un ShareApp encontrado en la red local. */
 data class PeerDevice(
     /** Identificador estable durante esta sesión de descubrimiento. */
     val id: String,

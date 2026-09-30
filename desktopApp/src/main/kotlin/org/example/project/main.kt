@@ -3,11 +3,18 @@ package org.example.project
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 
-fun main() = application {
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "KotlinProject",
-    ) {
-        App()
+fun main() {
+    val localServer = ShareAppServer().also { it.start() }
+
+    application {
+        Window(
+            onCloseRequest = {
+                localServer.stop()
+                exitApplication()
+            },
+            title = "ShareApp",
+        ) {
+            App()
+        }
     }
 }
